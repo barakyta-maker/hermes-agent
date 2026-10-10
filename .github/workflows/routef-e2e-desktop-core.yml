@@ -1,0 +1,72 @@
+# Independent Route-F CI adapter. Original source/workflows stay unchanged.
+name: Route-F independent / E2E Desktop core
+'on':
+  workflow_call: null
+permissions:
+  contents: read
+concurrency:
+  group: e2e-desktop-core-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  core:
+    name: Desktop core E2E (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: Install system dependencies for Electron
+      run: "sudo apt-get update -qq\nsudo apt-get install -y -qq \\\n  xvfb \\\n  libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6\
+        \ \\\n  xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64\n"
+    - name: Prepare locked Desktop build and test toolchain
+      id: pm
+      uses: ./.github/actions/setup-pm
+      with:
+        toolchain: all
+        extras: '[]'
+        test-environment: 'true'
+    - uses: ./.github/actions/retry
+      with:
+        command: npm ci
+    - name: Build the desktop app
+      working-directory: apps/desktop
+      run: npm run build
+    - name: Package the desktop app (electron-builder --dir)
+      working-directory: apps/desktop
+      run: npm run builder -- --dir --publish never --linux
+    - name: Run the core suite under xvfb
+      working-directory: apps/desktop
+      run: "xvfb-run -a --server-args=\"-screen 0 1280x1024x24\" \\\n  npx playwright test -c e2e/core/playwright.config.ts\n"
+      env:
+        CI: 'true'
+        HERMES_E2E_PYTHON: ${{ steps.pm.outputs.python-path }}
+        HERMES_E2E_REQUIRE_PACKAGED: '1'
+        OPENROUTER_API_KEY: ''
+        OPENAI_API_KEY: ''
+        NOUS_API_KEY: ''
+        ANTHROPIC_API_KEY: ''
+    - name: Upload failure artifacts
+      if: failure() || cancelled()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: desktop-core-e2e-${{ '01f8332c34107ba5320567fbb64a372657de6082' }}
+        path: 'apps/desktop/test-results/core
+
+          apps/desktop/playwright-report/core
+
+          '
+        retention-days: 14
+        overwrite: true
+        if-no-files-found: ignore
+env:
+  HERMES_ROUTEF_SOURCE_SHA: 01f8332c34107ba5320567fbb64a372657de6082

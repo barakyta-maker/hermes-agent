@@ -1,0 +1,66 @@
+# Independent Route-F CI adapter. Original source/workflows stay unchanged.
+name: Route-F independent / Docker / shell lint
+'on':
+  workflow_call: null
+permissions:
+  contents: read
+concurrency:
+  group: docker-lint-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+jobs:
+  hadolint:
+    name: Lint Dockerfile (hadolint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: hadolint
+      uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf
+      with:
+        dockerfile: Dockerfile
+        config: .hadolint.yaml
+        failure-threshold: warning
+    - name: hadolint (sandbox desktop image)
+      uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf
+      with:
+        dockerfile: docker/sandbox-desktop.Dockerfile
+        config: .hadolint.yaml
+        failure-threshold: warning
+  shellcheck:
+    name: Lint docker/ shell scripts (shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: shellcheck
+      uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38
+      env:
+        SHELLCHECK_OPTS: --severity=error
+      with:
+        scandir: ./docker
+env:
+  HERMES_ROUTEF_SOURCE_SHA: 01f8332c34107ba5320567fbb64a372657de6082

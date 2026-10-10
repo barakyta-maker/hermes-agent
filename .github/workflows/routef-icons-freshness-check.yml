@@ -1,0 +1,40 @@
+# Independent Route-F CI adapter. Original source/workflows stay unchanged.
+name: Route-F independent / Icon Assets Freshness
+'on':
+  workflow_call: null
+permissions:
+  contents: read
+jobs:
+  check:
+    name: Regenerate icons + diff against committed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - uses: ./.github/actions/setup-pm
+      with:
+        toolchain: all
+        extras: '[]'
+        cache-python: true
+        prune-python-cache: true
+    - name: Regenerate every target, verify structure, diff against committed
+      env:
+        HERMES_PAYLOAD_TAG: ''
+        HERMES_BUILD_COMMIT: ''
+      run: "node scripts/generate-icons.mjs\nnode scripts/generate-icons.mjs --check\nif ! git diff --exit-code --stat ||\
+        \ [ -n \"$(git status --porcelain --untracked-files=all)\" ]; then\n  git status --porcelain --untracked-files=all\n\
+        \  echo \"::error::Committed icons are stale. Run 'node scripts/generate-icons.mjs' and commit the result.\"\n  exit\
+        \ 1\nfi\n"
+env:
+  HERMES_ROUTEF_SOURCE_SHA: 01f8332c34107ba5320567fbb64a372657de6082

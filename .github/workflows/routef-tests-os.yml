@@ -1,0 +1,159 @@
+# Independent Route-F CI adapter. Original source/workflows stay unchanged.
+name: Route-F independent / OS-specific tests
+'on':
+  workflow_call:
+    inputs:
+      desktop_updater:
+        description: Run the Windows desktop-update hand-off integration tests (tests/scripts/desktop_update/test_desktop_update_windows_*.py).
+          These spawn the real scripts/desktop-update/windows.ps1 and poll its loopback server, so they carry process-timing
+          noise a shared runner amplifies; the caller gates them on the classifier's desktop_updater lane so a PR that never
+          touched that surface cannot be failed by it. Push / dispatch runs fail open (classifier sets every lane true).
+        type: boolean
+        required: false
+        default: true
+      e2e:
+        description: Run the Windows E2E job (tests/e2e/core/windows). A slow lane (scripts/ci/classify_changes.py); a caller
+          that passes nothing gets it.
+        type: boolean
+        required: false
+        default: true
+      e2e_upgrade:
+        description: Run the Windows install + update journey (tests/e2e/core/windows_update). A slow lane; a caller that
+          passes nothing gets it.
+        type: boolean
+        required: false
+        default: true
+      strict_acceptance:
+        description: 'Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing (''upd-txn'',
+          a comma list, or ''1'' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py).'
+        type: string
+        required: false
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: tests-os-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+jobs:
+  os-tests:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - name: macOS-only tests (1/2)
+          runner: macos-latest
+          marker: macos
+          slice: 1/2
+        - name: macOS-only tests (2/2)
+          runner: macos-latest
+          marker: macos
+          slice: 2/2
+        - name: Windows-only tests
+          runner: windows-latest
+          marker: windows
+        - name: Windows-only tests (arm64)
+          runner: windows-11-arm
+          marker: windows
+          timeout: 60
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: Set up native ARM64 build dependencies
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      uses: ./.github/actions/setup-windows-build-deps
+    - name: Set up locked Python and test dependencies
+      uses: ./.github/actions/setup-pm
+      with:
+        packages: ${{ matrix.marker == 'windows' && 'git,ripgrep' || 'ripgrep' }}
+        extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+        test-environment: 'true'
+        prune-python-cache: true
+    - name: Run ${{ matrix.marker }} tests
+      shell: bash
+      run: "set -uo pipefail\n\nLIST=\"${RUNNER_TEMP:-.}/selected-tests.txt\"\n\n# Process substitution would hide the helper's\
+        \ exit status, so write\n# to a file and check it explicitly.\nif ! python scripts/ci/list_os_marked_tests.py \\\n\
+        \       \"${{ matrix.marker }}\" > \"$LIST\"; then\n  echo \"::error::could not enumerate ${{ matrix.marker }} test\
+        \ files\"\n  exit 1\nfi\nif [ ! -s \"$LIST\" ]; then\n  echo \"::error::empty ${{ matrix.marker }} file list\"\n \
+        \ exit 1\nfi\n\necho \"selected file(s) for ${{ matrix.marker }}:\"\ncat \"$LIST\"\n\n# Desktop-update hand-off integration\
+        \ tests spawn the real\n# windows.ps1; deselect them unless the PR touched that surface\n# (see the workflow_call\
+        \ input). ``--ignore-glob`` keeps the file\n# list above intact, so a renamed test file still trips the\n# zero-tests\
+        \ guard rather than silently vanishing.\n# (bash 3.2 on the macOS runner: an empty array under ``set -u`` is\n# an\
+        \ unbound-variable error, hence the ``${arr[@]+...}`` idiom.)\nEXTRA_ARGS=()\nif [ \"${{ inputs.desktop_updater }}\"\
+        \ != \"true\" ]; then\n  echo \"desktop_updater lane off: skipping tests/scripts/desktop_update/test_desktop_update_windows_*.py\"\
+        \n  EXTRA_ARGS+=(--ignore-glob='*test_desktop_update_windows_*.py')\nfi\n\n# ``tr -d '\\r'``: on Windows the helper's\
+        \ redirected stdout gains\n# CRLF line endings; a stray \\r would corrupt the path. The list\n# uses the native path-list\
+        \ separator consumed by --files.\n#\n# Any non-zero exit propagates red: real test failures, or the\n# runner's own\
+        \ zero-run guard (every file filtered to empty by\n# ``-m`` — \"must never pass without running its OS's tests\").\n\
+        SEPARATOR=\"$(python -c 'import os, sys; sys.stdout.write(os.pathsep)')\"\nFILES=\"$(tr -d '\\r' < \"$LIST\" | paste\
+        \ -sd \"$SEPARATOR\" -)\"\nscripts/run_tests.sh --files \"$FILES\" -- \\\n  ${EXTRA_ARGS[@]+\"${EXTRA_ARGS[@]}\"}\
+        \ \\\n  -m \"platforms and not integration\" \\\n  -v --tb=short\n"
+      env:
+        HERMES_TEST_SLICE: ${{ matrix.slice || '' }}
+        OPENROUTER_API_KEY: ''
+        OPENAI_API_KEY: ''
+        NOUS_API_KEY: ''
+  install-update-e2e:
+    name: Windows install + update E2E
+    if: inputs.e2e_upgrade
+    uses: ./.github/workflows/routef-windows-install-update-e2e.yml
+    with:
+      strict_acceptance: ${{ inputs.strict_acceptance }}
+  e2e-windows:
+    name: Windows E2E (real processes)
+    if: inputs.e2e
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: Set up locked Python and test dependencies
+      uses: ./.github/actions/setup-pm
+      with:
+        packages: git,ripgrep
+        extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+        test-environment: 'true'
+        prune-python-cache: true
+    - name: Run Windows E2E suite
+      shell: bash
+      run: "scripts/run_tests.sh tests/e2e/core/windows/ -- \\\n  -m \"platforms and integration\" -v --tb=short -rA\n"
+      env:
+        HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
+        HERMES_TEST_FILE_TIMEOUT: '900'
+        HERMES_TEST_FILE_RETRIES: '0'
+        OPENROUTER_API_KEY: ''
+        OPENAI_API_KEY: ''
+        NOUS_API_KEY: ''
+    - name: No leftover Python / Hermes processes
+      if: always()
+      shell: pwsh
+      run: "$names = 'python.exe', 'pythonw.exe', 'hermes.exe'\n$deadline = (Get-Date).AddSeconds(20)\ndo {\n  $left = @(Get-CimInstance\
+        \ Win32_Process | Where-Object { $names -contains $_.Name.ToLower() })\n  if ($left.Count -eq 0) { 'no leftover python/hermes\
+        \ processes'; exit 0 }\n  Start-Sleep -Milliseconds 500\n} while ((Get-Date) -lt $deadline)\nforeach ($p in $left)\
+        \ {\n  \"::error::leftover pid=$($p.ProcessId) ppid=$($p.ParentProcessId): $($p.CommandLine)\"\n}\nexit 1\n"
+env:
+  HERMES_ROUTEF_SOURCE_SHA: 01f8332c34107ba5320567fbb64a372657de6082

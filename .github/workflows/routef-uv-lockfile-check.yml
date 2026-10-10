@@ -1,0 +1,89 @@
+# Independent Route-F CI adapter. Original source/workflows stay unchanged.
+name: Route-F independent / uv.lock check
+'on':
+  workflow_call:
+    outputs:
+      review_status:
+        description: JSON review status for the review-status aggregator
+        value: ${{ jobs.check.outputs.review_status }}
+permissions:
+  contents: read
+concurrency:
+  group: uv-lockfile-check-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+jobs:
+  check:
+    name: python -m pm.build_env --source . --check-lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      review_status: ${{ steps.verify.outputs.review_status }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - uses: ./.github/actions/setup-pm
+      with:
+        cache-python: true
+        prune-python-cache: true
+    - name: Verify uv.lock is up-to-date
+      id: verify
+      run: "# python -m pm.build_env --source . --check-lock re-resolves against PyPI (network). Retry so a\n# registry blip\
+        \ doesn't read as \"lockfile stale\". A genuinely stale\n# lockfile fails all attempts (deterministic), costing only\
+        \ seconds.\n#\n# Backoff rather than a flat 10s: three attempts inside ~20s all\n# land in the same blip. 5/15/45s\
+        \ spans ~65s instead.\n#\n# Network failure and a real desync are also reported differently.\n# uv says \"Request\
+        \ failed after N retries\" when it can't reach the\n# registry, versus \"lockfile needs to be updated\" when the lock\
+        \ is\n# genuinely stale. Only the second is the contributor's to fix, so\n# an unreachable registry says so instead\
+        \ of sending them to\n# `hermes pm lock` with nothing to regenerate.\nok=false\nnet_fail=false\ndelays=(5 15 45)\n\
+        for i in 1 2 3; do\n  if python -m pm.build_env --source . --check-lock >lock-check.log 2>&1; then\n    ok=true\n\
+        \    net_fail=false\n    cat lock-check.log\n    break\n  fi\n  cat lock-check.log\n  if grep -qiE \"Request failed\
+        \ after|Failed to fetch|error sending request|connection (reset|closed)|timed out\" lock-check.log; then\n    net_fail=true\n\
+        \  else\n    # Deterministic failure (a real desync) — retrying just prints\n    # the same error twice more.\n  \
+        \  net_fail=false\n    break\n  fi\n  [ \"$i\" = 3 ] && break\n  echo \"::warning::python -m pm.build_env --source\
+        \ . --check-lock could not reach the registry (attempt $i); retrying in ${delays[$((i-1))]}s\"\n  sleep \"${delays[$((i-1))]}\"\
+        \ndone\nif [ \"$ok\" != true ] && [ \"$net_fail\" = true ]; then\n  echo \"::error title=uv.lock check could not reach\
+        \ PyPI::Registry unreachable after 3 attempts — infrastructure failure, not a stale lockfile. Re-run the job.\"\n\
+        \  review_status='[{\"source\":\"uv.lock check\",\"results\":[{\"kind\":\"action_required\",\"title\":\"uv.lock check\
+        \ could not reach PyPI\",\"summary\":\"`python -m pm.build_env --source . --check-lock` could not reach the package\
+        \ registry after 3 attempts. This is an infrastructure failure, not a stale lockfile.\",\"how_to_fix\":\"Re-run the\
+        \ failed job. No change to `uv.lock` is needed.\"}]}]'\n  echo \"review_status=${review_status}\" >> \"$GITHUB_OUTPUT\"\
+        \n  echo \"review_status=${review_status}\" > review-status.json\n  exit 1\nfi\nif [ \"$ok\" != true ]; then\n  cat\
+        \ <<'EOF' >> \"$GITHUB_STEP_SUMMARY\"\n## ❌ uv.lock is out of sync with pyproject.toml\n\n**If this is a PR:** this\
+        \ check runs against the merged state\n(your branch + current `main`), not just your branch.  If\n`python -m pm.build_env\
+        \ --source . --check-lock` passes locally, your branch is likely behind\n`main` — recent changes to `pyproject.toml`\
+        \ on `main` aren't\nreflected in your branch's `uv.lock` yet.\n\nTo fix, sync with main and regenerate the lockfile:\n\
+        \n```bash\ngit fetch origin main\ngit rebase origin/main   # or `git merge origin/main`\nhermes pm lock          \
+        \        # regenerate against new pyproject.toml\ngit add uv.lock\ngit commit -m \"chore: refresh uv.lock after syncing\
+        \ with main\"\ngit push --force-with-lease  # drop --force-with-lease if you merged\n```\n\n**If you only changed\
+        \ pyproject.toml:** run `hermes pm lock` locally\nand commit the result.\n\nThis check is blocking because the Docker\
+        \ image build uses\n`uv sync --frozen --extra all`, which rejects stale lockfiles\n— catching it here avoids a ~15\
+        \ min failed docker run\non `main` post-merge.\nEOF\n  echo \"::error title=uv.lock out of sync::Run \\`hermes pm\
+        \ lock\\` locally and commit the result. If on a PR, sync with main first.\"\n  review_status='[{\"source\":\"uv.lock\
+        \ check\",\"results\":[{\"kind\":\"action_required\",\"title\":\"uv.lock out of sync\",\"summary\":\"uv.lock is out\
+        \ of sync with pyproject.toml.\",\"how_to_fix\":\"Run `hermes pm lock` locally and commit the result. If on a PR,\
+        \ sync with main first:\\n```\\ngit fetch origin main\\ngit rebase origin/main\\nhermes pm lock\\ngit add uv.lock\\\
+        ngit commit -m \\\"chore: refresh uv.lock\\\"\\n```\\n\"}]}]'\n  echo \"review_status=${review_status}\" >> \"$GITHUB_OUTPUT\"\
+        \n  echo \"review_status=${review_status}\" > review-status.json\n  exit 1\nfi\nreview_status='[]'\necho \"review_status=${review_status}\"\
+        \ >> \"$GITHUB_OUTPUT\"\necho \"review_status=${review_status}\" > review-status.json\n"
+    - name: Upload review status artifact
+      if: always() && steps.verify.outcome != 'skipped'
+      continue-on-error: true
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: review-status-uv-lockfile
+        path: review-status.json
+        retention-days: 1
+        overwrite: true
+        if-no-files-found: ignore
+env:
+  HERMES_ROUTEF_SOURCE_SHA: 01f8332c34107ba5320567fbb64a372657de6082

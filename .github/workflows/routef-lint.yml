@@ -1,0 +1,194 @@
+# Independent Route-F CI adapter. Original source/workflows stay unchanged.
+name: Route-F independent / Lint (ruff + ty)
+'on':
+  workflow_call:
+    inputs:
+      event_name:
+        description: The event name from the calling orchestrator (pull_request or push).
+        type: string
+        required: true
+      python:
+        description: Python changed. A frontend-only PR runs just the code-health ratchet (TS).
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: lint-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+jobs:
+  lint-diff:
+    name: ruff + ty diff
+    if: inputs.event_name == 'pull_request' && inputs.python
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        fetch-depth: 0
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - uses: ./.github/actions/setup-pm
+      with:
+        cache-python: true
+        prune-python-cache: true
+    - name: Install ruff + ty
+      uses: ./.github/actions/retry
+      with:
+        command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)" ty==0.0.82
+    - name: Determine base ref
+      id: base
+      run: "# For PRs, diff against the merge base with the target branch.\n# For pushes to main, diff against the previous\
+        \ commit on main.\nif [ \"${{ inputs.event_name }}\" = \"pull_request\" ]; then\n  BASE_SHA=$(git merge-base \"origin/${{\
+        \ github.base_ref }}\" HEAD)\n  BASE_REF=\"origin/${{ github.base_ref }}\"\nelse\n  BASE_SHA=$(git rev-parse HEAD~1\
+        \ 2>/dev/null || git rev-parse HEAD)\n  BASE_REF=\"HEAD~1\"\nfi\necho \"sha=${BASE_SHA}\" >> \"$GITHUB_OUTPUT\"\n\
+        echo \"ref=${BASE_REF}\" >> \"$GITHUB_OUTPUT\"\necho \"Base SHA: ${BASE_SHA}\"\necho \"Base ref: ${BASE_REF}\"\n"
+    - name: Run ruff + ty on HEAD
+      run: "mkdir -p .lint-reports/head\nruff check --output-format json --exit-zero \\\n  > .lint-reports/head/ruff.json\
+        \ || true\nty check --output-format gitlab --exit-zero \\\n  > .lint-reports/head/ty.json || true\necho \"HEAD ruff:\
+        \ $(wc -c < .lint-reports/head/ruff.json) bytes\"\necho \"HEAD ty:   $(wc -c < .lint-reports/head/ty.json) bytes\"\
+        \n"
+    - name: Run ruff + ty on base (via git worktree)
+      run: "mkdir -p .lint-reports/base\n# Use a worktree so we don't clobber the main checkout. If the basex\n# SHA is identical\
+        \ to HEAD (e.g. first commit), skip and leave the\n# base reports empty — the diff script handles missing files.\n\
+        HEAD_SHA=$(git rev-parse HEAD)\nBASE_SHA=\"${{ steps.base.outputs.sha }}\"\nif [ \"$BASE_SHA\" = \"$HEAD_SHA\" ];\
+        \ then\n  echo \"Base SHA == HEAD SHA, skipping base scan.\"\n  echo '[]' > .lint-reports/base/ruff.json\n  echo '[]'\
+        \ > .lint-reports/base/ty.json\nelse\n  git worktree add --detach /tmp/lint-base \"$BASE_SHA\"\n  (\n    cd /tmp/lint-base\n\
+        \    ruff check --output-format json --exit-zero \\\n      > \"$GITHUB_WORKSPACE/.lint-reports/base/ruff.json\" ||\
+        \ true\n    ty check --output-format gitlab --exit-zero \\\n      > \"$GITHUB_WORKSPACE/.lint-reports/base/ty.json\"\
+        \ || true\n  )\n  git worktree remove --force /tmp/lint-base\nfi\necho \"base ruff: $(wc -c < .lint-reports/base/ruff.json)\
+        \ bytes\"\necho \"base ty:   $(wc -c < .lint-reports/base/ty.json) bytes\"\n"
+    - name: Generate diff summary
+      env:
+        HEAD_REF: ${{ inputs.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+      run: "python scripts/lint_diff.py \\\n  --base-ruff .lint-reports/base/ruff.json \\\n  --head-ruff .lint-reports/head/ruff.json\
+        \ \\\n  --base-ty   .lint-reports/base/ty.json \\\n  --head-ty   .lint-reports/head/ty.json \\\n  --base-ref  \"${{\
+        \ steps.base.outputs.ref }}\" \\\n  --head-ref  \"$HEAD_REF\" \\\n  --output    .lint-reports/summary.md\ncat .lint-reports/summary.md\
+        \ >> \"$GITHUB_STEP_SUMMARY\"\n"
+  ruff-blocking:
+    name: ruff enforcement (blocking)
+    if: inputs.python
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - uses: ./.github/actions/setup-pm
+      with:
+        cache-python: true
+        prune-python-cache: true
+    - name: Install ruff
+      uses: ./.github/actions/retry
+      with:
+        command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)"
+    - name: ruff check .
+      run: 'ruff check .
+
+        '
+  code-health:
+    name: code health ratchet (blocking)
+    if: inputs.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        fetch-depth: 2
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - uses: ./.github/actions/setup-pm
+      with:
+        cache-python: true
+        prune-python-cache: true
+    - name: Install pinned ruff
+      uses: ./.github/actions/retry
+      with:
+        command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)"
+    - name: Ratchet the PR against the base branch tip
+      run: python scripts/check --only health --base HEAD^1
+  windows-footguns:
+    name: Windows footguns (blocking)
+    if: inputs.python
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - uses: ./.github/actions/setup-pm
+      with:
+        cache-python: true
+        prune-python-cache: true
+    - name: Run footgun checker
+      run: python scripts/check-windows-footguns.py --all
+    - name: Require portable Bash shebangs
+      run: python scripts/check_bash_shebangs.py
+    - name: Forbid literal /tmp paths outside the baseline
+      run: python scripts/check_no_tmp_literals.py
+    - name: Forbid config.yaml writers that bypass the comment-preserving writer
+      run: python scripts/check_config_yaml_writers.py
+    - name: Forbid unmarked macOS fakes in tests
+      run: python scripts/ci/check_os_marker_fakes.py
+    - name: Keep every AGENTS.md under its truncation cap
+      run: python scripts/ci/check_agents_md_size.py
+    - name: Profile-scope patterns on added lines (advisory)
+      if: github.event_name == 'pull_request'
+      continue-on-error: true
+      timeout-minutes: 3
+      env:
+        PR_HEAD: +refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/origin/pr-head
+      run: "git fetch --no-tags --deepen=200 origin \"${{ github.base_ref }}\" \"$PR_HEAD\"\nfor i in 1 2 3; do\n  git merge-base\
+        \ \"origin/${{ github.base_ref }}\" origin/pr-head >/dev/null 2>&1 && break\n  git fetch --no-tags --deepen=1000 origin\
+        \ \"${{ github.base_ref }}\" \"$PR_HEAD\"\ndone\npython scripts/check_profile_scope_patterns.py --base \"origin/${{\
+        \ github.base_ref }}\" --head origin/pr-head\n"
+    - name: Public-surface diff vs base (advisory)
+      if: github.event_name == 'pull_request'
+      continue-on-error: true
+      timeout-minutes: 3
+      env:
+        PR_HEAD: +refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/origin/pr-head
+      run: "git fetch --no-tags --deepen=200 origin \"${{ github.base_ref }}\" \"$PR_HEAD\"\nfor i in 1 2 3; do\n  git merge-base\
+        \ \"origin/${{ github.base_ref }}\" origin/pr-head >/dev/null 2>&1 && break\n  git fetch --no-tags --deepen=1000 origin\
+        \ \"${{ github.base_ref }}\" \"$PR_HEAD\"\ndone\npython scripts/ci/check_public_surface.py --base \"origin/${{ github.base_ref\
+        \ }}\" --head origin/pr-head\n"
+env:
+  HERMES_ROUTEF_SOURCE_SHA: 01f8332c34107ba5320567fbb64a372657de6082

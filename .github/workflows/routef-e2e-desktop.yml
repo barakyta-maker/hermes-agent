@@ -1,0 +1,154 @@
+# Independent Route-F CI adapter. Original source/workflows stay unchanged.
+name: Route-F independent / E2E Desktop
+'on':
+  workflow_call:
+    outputs:
+      review_status:
+        description: Screenshot and visual-diff status for the CI review comment.
+        value: ${{ jobs.e2e.outputs.review_status }}
+permissions:
+  contents: read
+concurrency:
+  group: e2e-desktop-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  e2e:
+    name: Playwright E2E (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      review_status: ${{ steps.review-status.outputs.review_status }}
+    steps:
+    - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: Install system dependencies for Electron
+      run: "sudo apt-get update -qq\nsudo apt-get install -y -qq \\\n  xvfb \\\n  libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6\
+        \ \\\n  xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64\n"
+    - name: Set up the locked desktop toolchain
+      uses: ./.github/actions/setup-pm
+      with:
+        toolchain: all
+        extras: '["all"]'
+        test-environment: 'true'
+        prune-python-cache: true
+    - uses: ./.github/actions/retry
+      with:
+        command: npm ci
+    - name: Restore visual baseline screenshots
+      id: restore-baselines
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: apps/desktop/e2e/*-snapshots
+        key: visual-baselines-${{ github.ref_name }}
+        restore-keys: 'visual-baselines-main
+
+          '
+    - name: Run Playwright E2E tests
+      working-directory: apps/desktop
+      run: "if [ \"${{ github.ref_name }}\" = \"main\" ]; then\n  echo \"On main — generating/updating baseline screenshots\"\
+        \n  npm run build && xvfb-run -a --server-args=\"-screen 0 1280x1024x24\" \\\n    npx playwright test --reporter=list\
+        \ --update-snapshots\nelse\n  echo \"On PR — comparing against cached baselines\"\n  npm run build && xvfb-run -a\
+        \ --server-args=\"-screen 0 1280x1024x24\" \\\n    npx playwright test --reporter=list\nfi\n"
+      env:
+        CI: 'true'
+        OPENROUTER_API_KEY: ''
+        OPENAI_API_KEY: ''
+        NOUS_API_KEY: ''
+    - name: Save updated baselines to cache
+      if: github.ref_name == 'main' && always()
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: apps/desktop/e2e/*-snapshots
+        key: visual-baselines-main
+    - name: Upload Playwright report
+      id: upload-report
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: playwright-report-${{ '01f8332c34107ba5320567fbb64a372657de6082' }}
+        path: apps/desktop/playwright-report
+        retention-days: 14
+        overwrite: true
+    - name: Upload test results
+      id: upload-results
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: playwright-test-results-${{ '01f8332c34107ba5320567fbb64a372657de6082' }}
+        path: apps/desktop/test-results
+        retention-days: 14
+        overwrite: true
+    - name: Upload visual diffs
+      id: upload-diffs
+      if: always() && github.ref_name != 'main'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: visual-diffs-${{ '01f8332c34107ba5320567fbb64a372657de6082' }}
+        path: 'apps/desktop/test-results/**/*-diff.png
+
+          apps/desktop/test-results/**/*-actual.png
+
+          apps/desktop/test-results/**/*-expected.png
+
+          '
+        retention-days: 14
+        overwrite: true
+        if-no-files-found: ignore
+    - name: Build screenshot review status
+      id: review-status
+      if: always()
+      working-directory: apps/desktop
+      env:
+        RESULTS_URL: ${{ steps.upload-results.outputs.artifact-url }}
+      run: "python3 ../../scripts/ci/e2e_screenshot_status.py \\\n  --results-dir test-results \\\n  --manifest-output /tmp/e2e-screenshot-manifest.json\
+        \ \\\n  --artifact-url \"$RESULTS_URL\" \\\n  --output /tmp/e2e-review-status.json\n{\n  echo 'review_status<<__E2E_REVIEW_STATUS__'\n\
+        \  cat /tmp/e2e-review-status.json\n  echo '__E2E_REVIEW_STATUS__'\n} >> \"$GITHUB_OUTPUT\"\ncp /tmp/e2e-review-status.json\
+        \ review-status.json\n"
+    - name: Upload review status artifact
+      if: always() && steps.review-status.outcome != 'skipped'
+      continue-on-error: true
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: review-status-e2e-desktop
+        path: apps/desktop/review-status.json
+        retention-days: 1
+        overwrite: true
+        if-no-files-found: ignore
+    - name: Generate visual diff summary
+      if: always()
+      working-directory: apps/desktop
+      env:
+        REPORT_URL: ${{ steps.upload-report.outputs.artifact-url }}
+        RESULTS_URL: ${{ steps.upload-results.outputs.artifact-url }}
+        DIFFS_URL: ${{ steps.upload-diffs.outputs.artifact-url }}
+      run: "{\necho \"## Desktop E2E — Visual Diff Report\"\necho \"\"\n\n# Count diff images (playwright writes *-diff.png\
+        \ on mismatch)\nDIFF_COUNT=$(find test-results -name '*-diff.png' 2>/dev/null | wc -l)\nACTUAL_COUNT=$(find test-results\
+        \ -name '*-actual.png' 2>/dev/null | wc -l)\n\nif [ \"$DIFF_COUNT\" -eq 0 ]; then\n  echo \"✅ All $ACTUAL_COUNT screenshot(s)\
+        \ matched their baselines (or no baselines existed yet).\"\nelse\n  echo \"\U0001F4F8 **$DIFF_COUNT of $ACTUAL_COUNT\
+        \ screenshot(s) differ from baseline:**\"\n  echo \"\"\n  echo \"| Test | Diff | Actual | Expected |\"\n  echo \"\
+        |------|------|--------|----------|\"\n\n  # List each diff image with a link to the artifact\n  for diff in $(find\
+        \ test-results -name '*-diff.png' 2>/dev/null | sort); do\n    base=${diff%-diff.png}\n    test_name=$(basename \"\
+        $base\")\n    echo \"| $test_name | [diff]($diff) | [actual](${base}-actual.png) | [expected](${base}-expected.png)\
+        \ |\"\n  done\nfi\n\necho \"\"\necho \"\U0001F4E5 **Artifacts:**\"\necho \"\"\nif [ -n \"$RESULTS_URL\" ]; then\n\
+        \  echo \"- [playwright-test-results]($RESULTS_URL) — all screenshots (actual + expected + diff) + traces\"\nfi\n\
+        if [ -n \"$REPORT_URL\" ]; then\n  echo \"- [playwright-report]($REPORT_URL) — interactive HTML report\"\nfi\nif [\
+        \ -n \"$DIFFS_URL\" ]; then\n  echo \"- [visual-diffs]($DIFFS_URL) — just the diffed screenshots (small, fast to review)\"\
+        \nfi\necho \"\"\necho \"**To update baselines:** merge to main (baselines auto-update on main runs) or run \\`npx\
+        \ playwright test --update-snapshots\\` locally.\"\n\n# Also parse the JSON report for pass/fail counts\nif [ -f playwright-report/results.json\
+        \ ]; then\n  echo \"\"\n  echo \"### Test Results\"\n  echo \"\"\n  node -e \"\n    const r = require('./playwright-report/results.json');\n\
+        \    const stats = r.stats || {};\n    console.log('| Status | Count |');\n    console.log('|--------|-------|');\n\
+        \    console.log('| ✅ Passed | ' + (stats.expected || 0) + ' |');\n    console.log('| ❌ Failed | ' + (stats.unexpected\
+        \ || 0) + ' |');\n    console.log('| ⏭️ Skipped | ' + (stats.skipped || 0) + ' |');\n    console.log('| \U0001F504\
+        \ Flaky | ' + (stats.flaky || 0) + ' |');\n  \" 2>/dev/null || true\nfi\n} >> \"$GITHUB_STEP_SUMMARY\"\n"
+env:
+  HERMES_ROUTEF_SOURCE_SHA: 01f8332c34107ba5320567fbb64a372657de6082

@@ -1,0 +1,52 @@
+# Independent Route-F CI adapter. Original source/workflows stay unchanged.
+name: Route-F independent / Infographic Check
+'on':
+  workflow_call:
+    outputs:
+      review_status:
+        description: JSON array of review_status objects for the synthesizer.
+        value: ${{ jobs.check-no-committed-infographics.outputs.review_status }}
+permissions:
+  contents: read
+jobs:
+  check-no-committed-infographics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      review_status: ${{ steps.infographic-check.outputs.review_status }}
+    steps:
+    - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - id: infographic-check
+      name: Reject committed PR-infographic images
+      run: "# Match on the IMAGE, not on a directory name.  Keying this to\n# `infographic/` is what let `infograficos/` through\
+        \ in #70552 —\n# any localized or typo'd directory would sidestep it again.\n# Instead: find tracked raster images\
+        \ whose path contains an\n# infographic-ish segment, in any spelling, at any depth.\n#\n# `docs/assets` and `website/`\
+        \ legitimately hold product imagery\n# and are excluded; those are referenced from shipped docs pages.\nOFFENDERS=$(git\
+        \ ls-files -z \\\n  | tr '\\0' '\\n' \\\n  | grep -iE '(^|/)(infograph|infograf)[^/]*/' \\\n  | grep -iE '\\.(png|jpe?g|webp|gif)$'\
+        \ \\\n  || true)\n\nif [ -n \"$OFFENDERS\" ]; then\n  COUNT=$(printf '%s\\n' \"$OFFENDERS\" | wc -l | tr -d ' ')\n\
+        \  STATUS='[{\"source\":\"committed infographics\",\"results\":[{\"kind\":\"action_required\",\"title\":\"PR infographic\
+        \ committed to the repo\",\"summary\":\"Infographic images belong in the PR description, never in git.\",\"detail\"\
+        :\"\",\"how_to_fix\":\"Untrack the image and reference the provider URL from the PR body instead:\\n```\\ngit rm --cached\
+        \ <path-to-image>\\n```\\nThen put it in the PR description:\\n```\\n## Infographic\\n\\n![slug](https://<provider-url>)\\\
+        n```\\n\"}]}]'\n  echo \"review_status=${STATUS}\" >> \"$GITHUB_OUTPUT\"\n  echo \"\"\n  echo \"::error::${COUNT}\
+        \ PR-infographic image(s) are tracked in git.\"\n  echo \"\"\n  printf '%s\\n' \"$OFFENDERS\" | sed 's/^/  /'\n  echo\
+        \ \"\"\n  echo \"PR infographics are rendered to an image-provider URL and\"\n  echo \"embedded in the PR DESCRIPTION.\
+        \  The PR body is the archive —\"\n  echo \"the binary never enters git history.\"\n  echo \"\"\n  echo \"This rule\
+        \ has been re-established twice already (#48261,\"\n  echo \"#54564) and leaked both times, because .gitignore cannot\
+        \ stop\"\n  echo \"'git add -f' or a differently-spelled directory (#70552).\"\n  echo \"\"\n  echo \"To fix:\"\n\
+        \  echo \"  git rm --cached <path>   # keeps your local copy\"\n  echo \"  # then embed the provider URL in the PR\
+        \ description\"\n  exit 1\nfi\necho \"::notice::No committed PR-infographic images.\"\necho \"review_status=[]\" >>\
+        \ \"$GITHUB_OUTPUT\"\n"
+env:
+  HERMES_ROUTEF_SOURCE_SHA: 01f8332c34107ba5320567fbb64a372657de6082

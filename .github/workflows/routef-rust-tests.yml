@@ -1,0 +1,49 @@
+# Independent Route-F CI adapter. Original source/workflows stay unchanged.
+name: Route-F independent / Rust tests
+'on':
+  workflow_call: null
+permissions:
+  contents: read
+concurrency:
+  group: rust-tests-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+jobs:
+  bootstrap-installer:
+    name: cargo test (bootstrap installer)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: apps/bootstrap-installer/src-tauri
+    steps:
+    - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: Install Tauri system dependencies
+      working-directory: .
+      run: "sudo apt-get update\nsudo apt-get install --no-install-recommends -y \\\n  libwebkit2gtk-4.1-dev \\\n  libappindicator3-dev\
+        \ \\\n  librsvg2-dev \\\n  libxdo-dev \\\n  libssl-dev \\\n  patchelf\n"
+    - name: Restore cargo cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: '~/.cargo/registry
+
+          ~/.cargo/git
+
+          apps/bootstrap-installer/src-tauri/target
+
+          '
+        key: cargo-${{ runner.os }}-${{ hashFiles('apps/bootstrap-installer/src-tauri/Cargo.toml') }}
+    - name: cargo test
+      run: cargo test --lib
+env:
+  HERMES_ROUTEF_SOURCE_SHA: 01f8332c34107ba5320567fbb64a372657de6082

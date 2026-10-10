@@ -1,0 +1,172 @@
+# Independent Route-F CI adapter. Original source/workflows stay unchanged.
+name: Route-F independent / Supply Chain Audit
+'on':
+  workflow_call:
+    inputs:
+      event_name:
+        description: The event name from the calling orchestrator.
+        type: string
+        required: true
+      scan:
+        description: Whether supply-chain-relevant files changed.
+        type: boolean
+        required: true
+      deps:
+        description: Whether pyproject.toml changed.
+        type: boolean
+        required: true
+    outputs:
+      review_status:
+        description: JSON array of review status objects for the review comment assembler.
+        value: ${{ jobs.aggregate.outputs.review_status }}
+permissions:
+  pull-requests: read
+  contents: read
+jobs:
+  scan:
+    name: Scan PR for critical supply chain risks
+    if: inputs.scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      review_status: ${{ steps.emit-status.outputs.review_status }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        fetch-depth: 0
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: Scan diff for critical patterns
+      id: scan
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "set -euo pipefail\n\nBASE=\"${{ github.event.pull_request.base.sha }}\"\nHEAD=\"${{ github.event.pull_request.head.sha\
+        \ }}\"\n\n# Added lines only, excluding lockfiles.\n# Three-point diff (base...head) diffs from the merge base to\
+        \ HEAD,\n# so only changes introduced by this PR are included — not changes\n# that landed on main after the PR branched\
+        \ off.\nDIFF=$(git diff \"$BASE\"...\"$HEAD\" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)\n\
+        \nFINDINGS=\"\"\n\n# --- base64 decode + exec/eval on the same line (the litellm attack pattern) ---\nB64_EXEC_HITS=$(echo\
+        \ \"$DIFF\" | grep -n '^+' | grep -iE 'base64\\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\\(|eval\\\
+        (' | head -10 || true)\nif [ -n \"$B64_EXEC_HITS\" ]; then\n  FINDINGS=\"${FINDINGS}\n### \U0001F6A8 CRITICAL: base64\
+        \ decode + exec/eval combo\nBase64-decoded strings passed directly to exec/eval — the signature of hidden credential-stealing\
+        \ payloads.\n\n**Matches:**\n\\`\\`\\`\n${B64_EXEC_HITS}\n\\`\\`\\`\n\"\nfi\n\n# --- subprocess with encoded/obfuscated\
+        \ command argument ---\nPROC_HITS=$(echo \"$DIFF\" | grep -n '^+' | grep -E 'subprocess\\.(Popen|call|run)\\s*\\('\
+        \ | grep -iE 'base64|\\\\x[0-9a-f]{2}|chr\\(' | head -10 || true)\nif [ -n \"$PROC_HITS\" ]; then\n  FINDINGS=\"${FINDINGS}\n\
+        ### \U0001F6A8 CRITICAL: subprocess with encoded/obfuscated command\nSubprocess calls whose command strings are base64-\
+        \ or hex-encoded are a strong indicator of payload execution.\n\n**Matches:**\n\\`\\`\\`\n${PROC_HITS}\n\\`\\`\\`\n\
+        \"\nfi\n\nif [ -n \"$FINDINGS\" ]; then\n  echo \"found=true\" >> \"$GITHUB_OUTPUT\"\n  echo \"$FINDINGS\" > /tmp/findings.md\n\
+        else\n  echo \"found=false\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+    - name: Emit review_status
+      id: emit-status
+      if: always()
+      env:
+        FOUND: ${{ steps.scan.outputs.found }}
+      run: "python3 - <<'PYEOF'\nimport json, os\n\nfound = os.environ.get(\"FOUND\", \"\") == \"true\"\n\nif found:\n   \
+        \ with open(\"/tmp/findings.md\", encoding=\"utf-8\") as f:\n        detail = f.read()\n    status = [{\n        \"\
+        source\": \"supply chain\",\n        \"results\": [{\n            \"kind\": \"action_required\",\n            \"title\"\
+        : \"Critical supply chain risk\",\n            \"summary\": \"Critical supply chain risk patterns detected in this\
+        \ PR.\",\n            \"detail\": detail,\n            \"how_to_fix\": \"Review the flagged code carefully. If it\
+        \ is a false positive, narrow the pattern in .github/workflows/supply-chain-audit.yml.\"\n        }]\n    }]\nelse:\n\
+        \    status = []\n\nwith open(os.environ[\"GITHUB_OUTPUT\"], \"a\", encoding=\"utf-8\") as f:\n    f.write(f\"review_status={json.dumps(status)}\\\
+        n\")\nPYEOF\n"
+    - name: Fail on critical findings
+      if: steps.scan.outputs.found == 'true'
+      run: 'echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the review comment for details."
+
+        exit 1
+
+        '
+  dep-bounds:
+    name: Check PyPI dependency upper bounds
+    if: inputs.deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      review_status: ${{ steps.emit-status.outputs.review_status }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        fetch-depth: 0
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: Check for unbounded PyPI deps
+      id: bounds
+      run: "set -euo pipefail\n\nBASE=\"${{ github.event.pull_request.base.sha }}\"\nHEAD=\"${{ github.event.pull_request.head.sha\
+        \ }}\"\n\n# Only check added lines in pyproject.toml\nADDED=$(git diff \"$BASE\"...\"$HEAD\" -- pyproject.toml | grep\
+        \ '^+' | grep -v '^+++' || true)\n\nif [ -z \"$ADDED\" ]; then\n  echo \"found=false\" >> \"$GITHUB_OUTPUT\"\n  exit\
+        \ 0\nfi\n\n# Match PyPI dep specs that have >= and no < ceiling.\n# Pattern: \"package>=version\" without a following\
+        \ \",<\" bound.\n# Excludes git+ URLs (which use commit SHAs) and comments.\nUNBOUNDED=$(echo \"$ADDED\" | grep -oE\
+        \ '\"[a-zA-Z0-9_-]+(\\[[^\\]]*\\])?>=[ 0-9.]+\"' | grep -v ',<' || true)\n\nif [ -n \"$UNBOUNDED\" ]; then\n  echo\
+        \ \"found=true\" >> \"$GITHUB_OUTPUT\"\n  echo \"$UNBOUNDED\" > /tmp/unbounded.txt\nelse\n  echo \"found=false\" >>\
+        \ \"$GITHUB_OUTPUT\"\nfi\n"
+    - name: Emit review_status
+      id: emit-status
+      if: always()
+      env:
+        FOUND: ${{ steps.bounds.outputs.found }}
+      run: "python3 - <<'PYEOF'\nimport json, os\n\nfound = os.environ.get(\"FOUND\", \"\") == \"true\"\n\nif found:\n   \
+        \ with open(\"/tmp/unbounded.txt\", encoding=\"utf-8\") as f:\n        detail = f.read()\n    status = [{\n      \
+        \  \"source\": \"supply chain\",\n        \"results\": [{\n            \"kind\": \"action_required\",\n          \
+        \  \"title\": \"Unbounded PyPI dependencies\",\n            \"summary\": \"This PR adds PyPI dependencies without\
+        \ upper bounds.\",\n            \"detail\": detail,\n            \"how_to_fix\": 'Add a `<next_major` upper bound,\
+        \ e.g. `\"package>=1.2.0,<2\"`. See CONTRIBUTING.md dependency pinning policy.'\n        }]\n    }]\nelse:\n    status\
+        \ = []\n\nwith open(os.environ[\"GITHUB_OUTPUT\"], \"a\", encoding=\"utf-8\") as f:\n    f.write(f\"review_status={json.dumps(status)}\\\
+        n\")\nPYEOF\n"
+    - name: Fail on unbounded deps
+      if: steps.bounds.outputs.found == 'true'
+      run: 'echo "::error::PyPI dependencies without upper bounds detected. Add <next_major ceiling per CONTRIBUTING.md policy."
+
+        exit 1
+
+        '
+  aggregate:
+    name: Aggregate review statuses
+    needs:
+    - scan
+    - dep-bounds
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      review_status: ${{ steps.merge.outputs.review_status }}
+    steps:
+    - name: Merge review statuses
+      id: merge
+      env:
+        SCAN_STATUS: ${{ needs.scan.outputs.review_status }}
+        DEP_STATUS: ${{ needs.dep-bounds.outputs.review_status }}
+      run: "python3 - <<'PYEOF'\nimport json, os\n\nmerged = []\nfor key in (\"SCAN_STATUS\", \"DEP_STATUS\"):\n    raw =\
+        \ os.environ.get(key, \"\")\n    if not raw:\n        continue\n    try:\n        data = json.loads(raw)\n    except\
+        \ (json.JSONDecodeError, TypeError):\n        continue\n    if isinstance(data, list):\n        merged.extend(data)\n\
+        \nwith open(os.environ[\"GITHUB_OUTPUT\"], \"a\", encoding=\"utf-8\") as f:\n    f.write(f\"review_status={json.dumps(merged)}\\\
+        n\")\n\n# Write review-status.json for the live comment poller artifact.\nwith open(\"review-status.json\", \"w\"\
+        , encoding=\"utf-8\") as f:\n    f.write(f\"review_status={json.dumps(merged)}\\n\")\nPYEOF\n"
+    - name: Upload review status artifact
+      if: always() && steps.merge.outcome != 'skipped'
+      continue-on-error: true
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: review-status-supply-chain
+        path: review-status.json
+        retention-days: 1
+        overwrite: true
+        if-no-files-found: ignore
+env:
+  HERMES_ROUTEF_SOURCE_SHA: 01f8332c34107ba5320567fbb64a372657de6082

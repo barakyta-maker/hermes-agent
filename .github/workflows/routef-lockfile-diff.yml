@@ -1,0 +1,76 @@
+# Independent Route-F CI adapter. Original source/workflows stay unchanged.
+name: Route-F independent / Lockfile diff
+'on':
+  workflow_call:
+    outputs:
+      changed:
+        description: Whether package-lock.json changed relative to the target branch.
+        value: ${{ jobs.diff.outputs.changed }}
+      review_status:
+        description: JSON array of review status objects for the unified PR comment.
+        value: ${{ jobs.diff.outputs.review_status }}
+permissions:
+  contents: read
+concurrency:
+  group: lockfile-diff-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  diff:
+    name: package-lock.json semantic diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+      review_status: ${{ steps.emit-status.outputs.review_status }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        fetch-depth: 0
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: Generate semantic lockfile diff
+      id: diff
+      run: "set -euo pipefail\n# Three-dot semantics by hand: diff from the merge base with the\n# target branch to the PR\
+        \ head, so changes that landed on main\n# after the branch point don't show up as this PR's doing.\nBASE_SHA=$(git\
+        \ merge-base \"origin/${{ github.base_ref }}\" HEAD)\necho \"Merge base: ${BASE_SHA}\"\npython3 scripts/ci/lockfile_diff.py\
+        \ \\\n  --base \"$BASE_SHA\" \\\n  --head HEAD \\\n  --output /tmp/lockfile-diff.md\nif [ -s /tmp/lockfile-diff.md\
+        \ ]; then\n  echo \"changed=true\" >> \"$GITHUB_OUTPUT\"\n  {\n    echo \"## package-lock.json semantic diff\"\n \
+        \   echo \"\"\n    cat /tmp/lockfile-diff.md\n  } >> \"$GITHUB_STEP_SUMMARY\"\nelse\n  echo \"changed=false\" >> \"\
+        $GITHUB_OUTPUT\"\n  : > /tmp/lockfile-diff.md\nfi\n"
+    - name: Emit review_status
+      id: emit-status
+      run: "set -euo pipefail\nCHANGED=\"${{ steps.diff.outputs.changed }}\"\nSTATUS=\"[]\"\n\nif [ \"$CHANGED\" = \"true\"\
+        \ ]; then\n  CONTENT=$(cat /tmp/lockfile-diff.md | python3 -c \"import sys,json; print(json.dumps(sys.stdin.read()))\"\
+        )\n  STATUS=\"[{\\\"source\\\":\\\"lockfile-diff\\\",\\\"results\\\":[{\\\"kind\\\":\\\"action_required\\\",\\\"title\\\
+        \":\\\"package-lock.json\\\",\\\"summary\\\":\\\"Locked npm dependency versions changed.\\\",\\\"detail\\\":${CONTENT},\\\
+        \"how_to_fix\\\":\\\"Verify the version changes are expected. package-lock.json changes need a hermes-agent-core review.\\\
+        \"}]}]\"\nelse\n  STATUS=\"[]\"\nfi\n\necho \"review_status=${STATUS}\" >> \"$GITHUB_OUTPUT\"\necho \"review_status=${STATUS}\"\
+        \ > review-status.json\n"
+    - name: Upload review status artifact
+      if: always() && steps.emit-status.outcome != 'skipped'
+      continue-on-error: true
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: review-status-lockfile-diff
+        path: review-status.json
+        retention-days: 1
+        overwrite: true
+        if-no-files-found: ignore
+    - name: Upload diff artifact
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: lockfile-diff
+        path: /tmp/lockfile-diff.md
+        retention-days: 1
+        overwrite: true
+env:
+  HERMES_ROUTEF_SOURCE_SHA: 01f8332c34107ba5320567fbb64a372657de6082

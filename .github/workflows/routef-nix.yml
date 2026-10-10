@@ -1,0 +1,166 @@
+# Independent Route-F CI adapter. Original source/workflows stay unchanged.
+name: Route-F independent / Nix flake check
+'on':
+  workflow_call:
+    inputs:
+      release:
+        description: 'Stable-release candidate run: force the flake-check lane regardless of the classifier.'
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: Release version stamped into an isolated flake source tree.
+        required: false
+        type: string
+        default: ''
+  push:
+    branches:
+    - routef/independent-ci-01f8332c
+permissions:
+  contents: read
+concurrency:
+  group: nix-${{ inputs.release == true && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ inputs.release != true && github.event_name == 'pull_request' }}
+jobs:
+  detect:
+    name: Detect affected areas
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      nix: ${{ steps.classify.outputs.nix }}
+    steps:
+    - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        repository: barakyta-maker/hermes-agent
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: Detect affected areas
+      id: classify
+      uses: ./.github/actions/detect-changes
+      with:
+        github-token: ${{ github.token }}
+  flake-check:
+    name: nix flake check
+    needs:
+    - detect
+    if: needs.detect.outputs.nix == 'true' || inputs.release == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        repository: barakyta-maker/hermes-agent
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: Install Nix
+      uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342
+      with:
+        extra_nix_config: 'experimental-features = nix-command flakes
+
+          # A store path that does not substitute is a cache miss and not a
+
+          # build failure. Build it here instead.
+
+          fallback = true
+
+          # Each source archive is fetched one time in a run, and not one
+
+          # time for each evaluation.
+
+          tarball-ttl = 3600
+
+          '
+    - name: Restore and save the Nix store
+      uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569
+      with:
+        primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'nix/**', 'pyproject.toml', 'uv.lock') }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-
+        save: ${{ github.event_name != 'pull_request' }}
+        gc-max-store-size-linux: 5G
+        purge: true
+        purge-prefixes: nix-${{ runner.os }}-
+        purge-created: 0
+        purge-primary-key: never
+    - name: Prepare isolated release source
+      if: inputs.release == true
+      env:
+        RELEASE_VERSION: ${{ inputs.version }}
+      run: "mkdir -p \"$RUNNER_TEMP/release-source\"\ngit archive \"$HERMES_ROUTEF_SOURCE_SHA\" | tar -x -C \"$RUNNER_TEMP/release-source\"\
+        \npython3 scripts/releases/stamping.py --tree \"$RUNNER_TEMP/release-source\" \\\n  --version \"$RELEASE_VERSION\"\
+        \n"
+    - name: nix flake check
+      run: nix flake check "${{ inputs.release == true && format('path:{0}/release-source', runner.temp) || '.' }}" --print-build-logs
+    - name: Verify release package runtime identity
+      if: inputs.release == true
+      env:
+        RELEASE_VERSION: ${{ inputs.version }}
+      run: "package=\"$(nix build \"path:$RUNNER_TEMP/release-source#hermes-agent\" --no-link --print-out-paths)\"\nactual=\"\
+        $(\"$package/bin/hermes\" --version)\"\nACTUAL_VERSION=\"$actual\" python3 - <<'PY'\nimport os\n\nexpected = os.environ[\"\
+        RELEASE_VERSION\"]\nactual = os.environ[\"ACTUAL_VERSION\"].split()[-1].removeprefix(\"v\")\nif actual != expected:\n\
+        \    raise SystemExit(f\"Nix package version mismatch: expected {expected}, got {actual}\")\nPY\n"
+  routef-source-identity:
+    name: Route-F exact-source receipt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+    - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+      with:
+        repository: barakyta-maker/hermes-agent
+        ref: 01f8332c34107ba5320567fbb64a372657de6082
+        persist-credentials: false
+    - name: Verify exact Route-F source identity
+      shell: bash
+      run: 'test "$(git rev-parse HEAD)" = ''01f8332c34107ba5320567fbb64a372657de6082''
+
+        test "$(git rev-parse HEAD^{tree})" = ''eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65''
+
+        '
+    - name: Record source receipt
+      shell: bash
+      run: 'printf ''%s\n'' ''Route-F independent verification'' ''Source: 01f8332c34107ba5320567fbb64a372657de6082'' ''Tree:
+        eaaf4cd4bcbc38bee94a30a83cfaab58e504ea65'' ''Upstream PR: #119064 (acceptance remains separate)'' >> "$GITHUB_STEP_SUMMARY"
+
+        '
+  routef-nix-gate:
+    name: Nix actually executed
+    needs:
+    - detect
+    - flake-check
+    - routef-source-identity
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+    - shell: bash
+      env:
+        RESULTS: ${{ toJSON(needs) }}
+      run: 'python3 - <<''PY''
+
+        import json, os
+
+        results = json.loads(os.environ[''RESULTS''])
+
+        failed = {k:v[''result''] for k,v in results.items() if v[''result''] != ''success''}
+
+        if failed: raise SystemExit(str(failed))
+
+        PY
+
+        '
+env:
+  HERMES_ROUTEF_SOURCE_SHA: 01f8332c34107ba5320567fbb64a372657de6082
