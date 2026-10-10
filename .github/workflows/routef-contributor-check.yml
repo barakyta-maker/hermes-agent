@@ -30,12 +30,13 @@ jobs:
         '
     - name: Check for unmapped contributor emails
       id: check-emails
-      run: "# Get the merge base between this PR and main\nMERGE_BASE=$(git merge-base origin/main HEAD)\n\n# Find any new\
-        \ author emails in this PR's commits\nNEW_EMAILS=$(git log ${MERGE_BASE}..HEAD --format='%ae' --no-merges | sort -u)\n\
-        \nif [ -z \"$NEW_EMAILS\" ]; then\n  echo \"No new commits to check.\"\n  echo \"review_status=[]\" >> \"$GITHUB_OUTPUT\"\
-        \n  echo \"review_status=[]\" > review-status.json\n  exit 0\nfi\n\n# An email is mapped if it has a file in contributors/emails/\n\
-        # (one file per email — conflict-free) or an entry in the frozen\n# legacy AUTHOR_MAP in scripts/releases/authors_legacy.py.\n\
-        MISSING=\"\"\nwhile IFS= read -r email; do\n  # Skip teknium and bot emails\n  case \"$email\" in\n    *teknium*|*noreply@github.com*|*dependabot*|*github-actions*|*anthropic.com*|*cursor.com*)\n\
+      run: "# Get the merge base between this PR and main\nMERGE_BASE=$(git merge-base '865ba906c1a8d93de65839ee7af487204d42e873'\
+        \ HEAD)\n\n# Find any new author emails in this PR's commits\nNEW_EMAILS=$(git log ${MERGE_BASE}..HEAD --format='%ae'\
+        \ --no-merges | sort -u)\n\nif [ -z \"$NEW_EMAILS\" ]; then\n  echo \"No new commits to check.\"\n  echo \"review_status=[]\"\
+        \ >> \"$GITHUB_OUTPUT\"\n  echo \"review_status=[]\" > review-status.json\n  exit 0\nfi\n\n# An email is mapped if\
+        \ it has a file in contributors/emails/\n# (one file per email — conflict-free) or an entry in the frozen\n# legacy\
+        \ AUTHOR_MAP in scripts/releases/authors_legacy.py.\nMISSING=\"\"\nwhile IFS= read -r email; do\n  # Skip teknium\
+        \ and bot emails\n  case \"$email\" in\n    *teknium*|*noreply@github.com*|*dependabot*|*github-actions*|*anthropic.com*|*cursor.com*)\n\
         \      continue ;;\n  esac\n\n  if echo \"$email\" | grep -qP '\\+.*@users\\.noreply\\.github\\.com'; then\n    continue\
         \  # GitHub id+login noreply emails auto-resolve\n  fi\n\n  if [ -f \"contributors/emails/${email}\" ]; then\n   \
         \ continue  # mapped via the contributors directory\n  fi\n\n  if ! grep -qF \"\\\"${email}\\\"\" scripts/releases/authors_legacy.py\

@@ -32,20 +32,20 @@ jobs:
       name: Reject PRs with no common ancestor on main
       run: "# `git merge-base` exits non-zero AND prints nothing when the two\n# commits share no ancestor.  We check both\
         \ conditions explicitly\n# so the failure message is clear regardless of which signal fires\n# first.\nif ! BASE=$(git\
-        \ merge-base origin/main HEAD 2>/dev/null) || [ -z \"$BASE\" ]; then\n  STATUS='[{\"source\":\"unrelated histories\"\
-        ,\"results\":[{\"kind\":\"action_required\",\"title\":\"Unrelated histories\",\"summary\":\"This PR has no common\
-        \ ancestor with main.\",\"detail\":\"\",\"how_to_fix\":\"Rebase your changes onto current main:\\n```\\ngit fetch\
-        \ origin main\\ngit checkout -b fix-branch origin/main\\n# re-apply your changes (cherry-pick, copy files, etc.)\\\
-        ngit push -f origin fix-branch\\n```\\n\"}]}]'\n  echo \"review_status=${STATUS}\" >> \"$GITHUB_OUTPUT\"\n  echo \"\
-        review_status=${STATUS}\" > review-status.json\n  echo \"\"\n  echo \"::error::This PR has no common ancestor with\
-        \ main.\"\n  echo \"\"\n  echo \"Your branch's history is disconnected from main.  Common causes:\"\n  echo \"  -\
-        \ the branch was created with 'git checkout --orphan'\"\n  echo \"  - '.git/' was re-initialized at some point during\
-        \ the work\"\n  echo \"  - the branch was force-pushed from an unrelated repository\"\n  echo \"\"\n  echo \"Merging\
-        \ an unrelated-history PR grafts a parent-less root commit\"\n  echo \"into main and collapses git blame for every\
-        \ file in that snapshot.\"\n  echo \"Reference: PR #25045 caused this and re-rooted blame on ~1500\"\n  echo \"files\
-        \ to a single orphan commit.\"\n  echo \"\"\n  echo \"To fix, rebase your changes onto current main:\"\n  echo \"\
-        \  git fetch origin main\"\n  echo \"  git checkout -b fix-branch origin/main\"\n  echo \"  # re-apply your changes\
-        \ (cherry-pick, copy files, etc.)\"\n  echo \"  git push -f origin fix-branch\"\n  exit 1\nfi\necho \"::notice::Common\
+        \ merge-base '865ba906c1a8d93de65839ee7af487204d42e873' HEAD 2>/dev/null) || [ -z \"$BASE\" ]; then\n  STATUS='[{\"\
+        source\":\"unrelated histories\",\"results\":[{\"kind\":\"action_required\",\"title\":\"Unrelated histories\",\"summary\"\
+        :\"This PR has no common ancestor with main.\",\"detail\":\"\",\"how_to_fix\":\"Rebase your changes onto current main:\\\
+        n```\\ngit fetch origin main\\ngit checkout -b fix-branch origin/main\\n# re-apply your changes (cherry-pick, copy\
+        \ files, etc.)\\ngit push -f origin fix-branch\\n```\\n\"}]}]'\n  echo \"review_status=${STATUS}\" >> \"$GITHUB_OUTPUT\"\
+        \n  echo \"review_status=${STATUS}\" > review-status.json\n  echo \"\"\n  echo \"::error::This PR has no common ancestor\
+        \ with main.\"\n  echo \"\"\n  echo \"Your branch's history is disconnected from main.  Common causes:\"\n  echo \"\
+        \  - the branch was created with 'git checkout --orphan'\"\n  echo \"  - '.git/' was re-initialized at some point\
+        \ during the work\"\n  echo \"  - the branch was force-pushed from an unrelated repository\"\n  echo \"\"\n  echo\
+        \ \"Merging an unrelated-history PR grafts a parent-less root commit\"\n  echo \"into main and collapses git blame\
+        \ for every file in that snapshot.\"\n  echo \"Reference: PR #25045 caused this and re-rooted blame on ~1500\"\n \
+        \ echo \"files to a single orphan commit.\"\n  echo \"\"\n  echo \"To fix, rebase your changes onto current main:\"\
+        \n  echo \"  git fetch origin main\"\n  echo \"  git checkout -b fix-branch origin/main\"\n  echo \"  # re-apply your\
+        \ changes (cherry-pick, copy files, etc.)\"\n  echo \"  git push -f origin fix-branch\"\n  exit 1\nfi\necho \"::notice::Common\
         \ ancestor with main: $BASE\"\necho \"review_status=[]\" >> \"$GITHUB_OUTPUT\"\necho \"review_status=[]\" > review-status.json\n"
     - name: Upload review status artifact
       if: always() && steps.merge-base-check.outcome != 'skipped'
